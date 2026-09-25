@@ -1,0 +1,106 @@
+load("@rules_cc//cc:defs.bzl", "cc_library")
+
+# editor_full_widget.c -- the exact same real `cat gen/editor_stdlib_gen.c examples/
+# editor_main.c` concatenation the plain Makefile's own gen/editor_full.c target performs (see
+# that file's own header comment for WHY: editor_main.c relies on being appended into the SAME
+# translation unit as the generated stdlib code, referencing its `static`-scoped types/
+# functions directly -- compiling them as two separate cc_library srcs would lose that
+# visibility across translation units). This genrule is the Bazel-native equivalent of that
+# Makefile rule, not a second, drifting copy of the logic.
+genrule(
+    name = "editor_full_widget_gen",
+    srcs = [
+        "gen/editor_stdlib_gen.c",
+        "examples/editor_main.c",
+    ],
+    outs = ["editor_full_widget.c"],
+    cmd = "cat $(location gen/editor_stdlib_gen.c) $(location examples/editor_main.c) > $@",
+)
+
+# editor_widget -- the real editor_widget_* API (create/dispatch_event/render_frame/
+# capture_rgba/present/tick_autosave/should_close/shutdown, see examples/editor_main.c's own
+# EDITOR_WIDGET_TEST_BUILD-guarded split) as a cc_library another repo's own cc_binary can
+# depend on, consumed by SHANKPIT/apps/lobby/src/editor_widget_bridge.c via SHANKPIT's own
+# MODULE.bazel local_path_override onto this repo. EDITOR_WIDGET_TEST_BUILD is always defined
+# here (this target never wants examples/editor_main.c's own standalone `main()` -- the
+# consuming binary, e.g. SHANKPIT's own shank_lobby, supplies its own).
+#
+# Real, honest, NOT verified: no `bazel` binary exists in the sandbox this was written in, so
+# this target itself was never actually built here -- build it on a real machine (both this
+# repo standalone, `bazel build //:editor_widget`, and from SHANKPIT,
+# `bazel build //apps/lobby:shank_lobby`) before trusting it. The exact same C source WAS
+# compiled and run successfully via the plain Makefile in this same session, including a real
+# runtime smoke test of every editor_widget_* entry point (examples/editor_widget_test.c) --
+# it's specifically this Bazel wiring, not the underlying C, that's unverified.
+# prnfmt_renamed -- src/arena.c/src/fmt.c/runtime/prnfmt_bridge.c, compiled with the SAME
+# arena_init/arena_alloc/arena_strdup/arena_free_all -> pf_arena_* rename the plain Makefile's
+# own PRNFMT_RENAME applies to just these three files (never to editor_full_widget.c or
+# runtime/parena_runtime.c below) -- src/arena.c is prnfmt's own, separate bump-allocator
+# implementation, and without this rename its own `arena_init` etc. would collide at link time
+# with runtime/parena_runtime.c's real, different `arena_init` (see that file's own header
+# comment). Split into its own cc_library, not local_defines on one shared target, because
+# Bazel's local_defines apply to every src in a cc_library uniformly -- exactly the per-file
+# split the Makefile relies on here.
+cc_library(
+    name = "prnfmt_renamed",
+    srcs = [
+        "src/arena.c",
+        "src/fmt.c",
+        "runtime/prnfmt_bridge.c",
+    ],
+    hdrs = [
+        "src/arena.h",
+        "src/fmt.h",
+        "runtime/parena_runtime.h",
+    ],
+    includes = [
+        "runtime",
+        "src",
+    ],
+    local_defines = [
+        "arena_init=pf_arena_init",
+        "arena_alloc=pf_arena_alloc",
+        "arena_strdup=pf_arena_strdup",
+        "arena_free_all=pf_arena_free_all",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+# editor_widget -- the real editor_widget_* API (create/dispatch_event/render_frame/
+# capture_rgba/present/tick_autosave/should_close/shutdown, see examples/editor_main.c's own
+# EDITOR_WIDGET_TEST_BUILD-guarded split) as a cc_library another repo's own cc_binary can
+# depend on, consumed by SHANKPIT/apps/lobby/src/editor_widget_bridge.c via SHANKPIT's own
+# MODULE.bazel local_path_override onto this repo. EDITOR_WIDGET_TEST_BUILD is always defined
+# here (this target never wants examples/editor_main.c's own standalone `main()` -- the
+# consuming binary, e.g. SHANKPIT's own shank_lobby, supplies its own).
+#
+# Real, honest, NOT verified: no `bazel` binary exists in the sandbox this was written in, so
+# this target itself was never actually built here -- build it on a real machine (both this
+# repo standalone, `bazel build //:editor_widget`, and from SHANKPIT,
+# `bazel build //apps/lobby:shank_lobby`) before trusting it. The exact same C source WAS
+# compiled and run successfully via the plain Makefile in this same session, including a real
+# runtime smoke test of every editor_widget_* entry point (examples/editor_widget_test.c) --
+# it's specifically this Bazel wiring, not the underlying C, that's unverified.
+cc_library(
+    name = "editor_widget",
+    srcs = [
+        "editor_full_widget.c",
+        "runtime/parena_runtime.c",
+    ],
+    hdrs = [
+        "runtime/parena_runtime.h",
+    ],
+    includes = [
+        "runtime",
+    ],
+    local_defines = [
+        "EDITOR_WIDGET_TEST_BUILD",
+    ],
+    deps = [":prnfmt_renamed"],
+    linkopts = [
+        "-lSDL2",
+        "-lSDL2_ttf",
+        "-lm",
+    ],
+    visibility = ["//visibility:public"],
+)

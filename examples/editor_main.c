@@ -906,8 +906,79 @@ static void do_save(Buffer *buf, const char *path, int is_markdown, Arena *a) {
     }
 }
 
-int main(int argc, char **argv) {
-    const char *path = (argc > 1) ? argv[1] : "scratch.prn";
+/* ============================================================
+ * editor_widget: state promoted from main()'s own locals to file
+ * scope (2026-09-25, founder real-time: "the editor app fails to
+ * launch -- instead of having it launch it should pop a widget up
+ * on the screen ... dont spawn a separate process deeply integrate
+ * it as a widget"). Every one of these carries the EXACT SAME name
+ * it had as a local in the original main() -- every reference to it
+ * anywhere below (in what is now editor_widget_dispatch_event/
+ * editor_widget_render_frame) is byte-for-byte unchanged, only the
+ * storage class and where the value gets ASSIGNED moved. This is
+ * what makes main() itself splittable into editor_widget_create/
+ * _dispatch_event/_render_frame/_present/_tick_autosave/_shutdown,
+ * callable individually by a host process instead of only from one
+ * big blocking main() loop -- see EDITOR.GAME/NORTHSTAR.md and
+ * SHANKPIT/apps/lobby/src/main.c for the real host/compositor side.
+ * TERM_OUTPUT_CAP is hoisted up from its original inline #define
+ * (it used to sit right before term_output's own declaration, inside
+ * main()) since term_output is now declared here, earlier in the
+ * file than that original spot -- every other #define in this file
+ * stays exactly where it always was; the preprocessor doesn't care
+ * about enclosing braces, only textual order, so nothing else needed
+ * to move. */
+#define TERM_OUTPUT_CAP 65536
+
+static const char *path;
+static Arena a;
+static Arena frame_arena;
+static Result r;
+static Result wr;
+static Window win;
+static Result rr;
+static Renderer ren;
+static Result ttfr;
+static Result fontr;
+static Font font;
+static int is_markdown;
+static int is_json;
+static Result gr;
+static Vec rules;
+static Buffer buf;
+static char *exe_path;
+static int dragging = 0;
+static int mouse_down_pos = 0;
+static int scroll_offset = 0;
+static int file_tree_scroll_offset = 0;
+static int editor_source_scroll_offset = 0;
+static int last_mouse_y = 0;
+static Toggle auto_indent_toggle;
+static Toggle file_tree_toggle;
+static Toggle settings_toggle;
+static Toggle terminal_toggle;
+static Toggle editor_source_toggle;
+static int term_spawned = 0;
+static Pty term_pty;
+static char term_output[TERM_OUTPUT_CAP];
+static int term_output_len = 0;
+static char *file_tree_dir = ".";
+static Vec file_tree_entries;
+static char *editor_source_dir = ".";
+static Vec editor_source_entries;
+static int spotlight_visible = 0;
+static char spotlight_query[256];
+static int spotlight_query_len = 0;
+static Vec spotlight_results;
+static int spotlight_selected = 0;
+static int spotlight_scroll_offset = 0;
+static int zoom_percent = 100;
+static int running = 1;
+
+static Result editor_widget_make_window(char *title, int w, int h, int hidden, Arena *dest);
+
+int editor_widget_create(const char *path_arg, const char *argv0, int hidden) {
+    path = path_arg;
 
 #ifndef _WIN32
     /* Real, standard fire-and-forget-child fix (2026-08-27, real
@@ -925,7 +996,6 @@ int main(int argc, char **argv) {
     signal(SIGCHLD, SIG_IGN);
 #endif
 
-    Arena a;
     arena_init(&a);
 
     /* frame_arena -- real, confirmed-live fix (2026-08-27, founder
@@ -964,26 +1034,25 @@ int main(int argc, char **argv) {
      * system" as a stated v0 tradeoff) -- out of scope here; this fix
      * closes the actual reported crash (unbounded growth), not the
      * separate, now-harmless-since-bounded CPU cost. */
-    Arena frame_arena;
     arena_init(&frame_arena);
 
-    Result r = init(&a);
-    if (r.tag != 1) { fprintf(stderr, "editor: sdl2 init failed\n"); return 1; }
+    r = init(&a);
+    if (r.tag != 1) { fprintf(stderr, "editor: sdl2 init failed\n"); return 0; }
 
-    Result wr = create_window("PARENA editor -- v0", WINDOW_WIDTH, WINDOW_HEIGHT, &a);
-    if (wr.tag != 1) { fprintf(stderr, "editor: create-window failed\n"); return 1; }
-    Window win = *(Window *)wr.value;
+    wr = editor_widget_make_window("PARENA editor -- v0", WINDOW_WIDTH, WINDOW_HEIGHT, hidden, &a);
+    if (wr.tag != 1) { fprintf(stderr, "editor: create-window failed\n"); return 0; }
+    win = *(Window *)wr.value;
 
-    Result rr = create_renderer(&win, &a);
-    if (rr.tag != 1) { fprintf(stderr, "editor: create-renderer failed\n"); return 1; }
-    Renderer ren = *(Renderer *)rr.value;
+    rr = create_renderer(&win, &a);
+    if (rr.tag != 1) { fprintf(stderr, "editor: create-renderer failed\n"); return 0; }
+    ren = *(Renderer *)rr.value;
 
-    Result ttfr = ttf_init(&a);
-    if (ttfr.tag != 1) { fprintf(stderr, "editor: ttf-init failed\n"); return 1; }
+    ttfr = ttf_init(&a);
+    if (ttfr.tag != 1) { fprintf(stderr, "editor: ttf-init failed\n"); return 0; }
 
-    Result fontr = open_font_with_fallback(20, &a);
-    if (fontr.tag != 1) { fprintf(stderr, "editor: open-font failed\n"); return 1; }
-    Font font = *(Font *)fontr.value;
+    fontr = open_font_with_fallback(20, &a);
+    if (fontr.tag != 1) { fprintf(stderr, "editor: open-font failed\n"); return 0; }
+    font = *(Font *)fontr.value;
 
     /* Real grammar selection by file extension (2026-08-27, founder:
      * "make sure we support .md syntax highlighting") -- PARENA source
@@ -1002,16 +1071,16 @@ int main(int argc, char **argv) {
      * official grammars need begin/end span support this engine
      * doesn't have yet) -- JSON is the proof case, not the finish
      * line. */
-    int is_markdown = path_has_suffix(path, ".md");
-    int is_json = path_has_suffix(path, ".json");
-    Result gr = is_markdown ? build_markdown_grammar(&a)
+    is_markdown = path_has_suffix(path, ".md");
+    is_json = path_has_suffix(path, ".json");
+    gr = is_markdown ? build_markdown_grammar(&a)
                 : is_json ? build_json_grammar(&a)
                 : build_grammar(&a);
-    if (gr.tag != 1) { fprintf(stderr, "editor: build-grammar failed\n"); return 1; }
-    Vec rules = *(Vec *)gr.value;
+    if (gr.tag != 1) { fprintf(stderr, "editor: build-grammar failed\n"); return 0; }
+    rules = *(Vec *)gr.value;
 
     start_text_input();
-    Buffer buf = load_from_file(path, &a);
+    buf = load_from_file(path, &a);
 
     /* Real, resolved once at startup (2026-08-27, real drag-and-drop):
      * spawn_new_instance's own real re-exec target. Resolved here, not
@@ -1022,16 +1091,14 @@ int main(int argc, char **argv) {
      * won't work from every real CWD, but better than silently
      * disabling drag-and-drop entirely over a real, rare resolution
      * failure. */
-    char *exe_path = executable_path(&a);
-    if (!exe_path) exe_path = argv[0];
+    exe_path = executable_path(&a);
+    if (!exe_path) exe_path = (char *)argv0;
 
     /* Real mouse-drag selection state (2026-08-27): dragging tracks
      * whether the real left mouse button is currently held (set on a
      * real MouseDown, cleared on a real MouseUp); mouse_down_pos is the
      * real byte offset the drag started at -- the real, fixed anchor
      * end of the selection for as long as the drag continues. */
-    int dragging = 0;
-    int mouse_down_pos = 0;
 
     /* Real vertical scroll state (2026-08-27, founder real-time,
      * actively using the editor: "mouse wheel scroll does not work" --
@@ -1039,7 +1106,6 @@ int main(int argc, char **argv) {
      * taller than the window had no way to see past the first
      * screenful). Real, minimal, LINE-based (not pixel-based) offset:
      * how many real lines are scrolled off the top of the view. */
-    int scroll_offset = 0;
 #define SCROLL_LINES_PER_NOTCH 3 /* real, standard default most real apps use */
 
     /* Real, separate scroll state for the file-tree sidebar (2026-08-27,
@@ -1052,13 +1118,11 @@ int main(int argc, char **argv) {
      * branches below) -- a freshly-listed directory should always open
      * scrolled to its own real top, not wherever the PREVIOUS
      * directory's own scroll happened to land. */
-    int file_tree_scroll_offset = 0;
 
     /* editor_source_scroll_offset -- same real shape as
      * file_tree_scroll_offset above, for the new RIGHT sidebar's own
      * independent row list (see SIDEBAR_WIDTH's own header comment
      * further up for the full real reasoning). */
-    int editor_source_scroll_offset = 0;
 
     /* Real hover-reveal bottom status bar state (2026-08-27, see this
      * file's own STATUS_BAR_HEIGHT/HOVER_REVEAL_ZONE header comment for
@@ -1072,8 +1136,7 @@ int main(int argc, char **argv) {
      * "ui widget system" ask, chosen as the next thread after the
      * v0.77.0-v0.80.0 close-out) -- replaces what used to be a bare
      * `int` flipped by hand next to a raw rect hit-test inline here. */
-    int last_mouse_y = 0;
-    Toggle auto_indent_toggle = new_toggle(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 340, STATUS_BAR_HEIGHT,
+    auto_indent_toggle = new_toggle(0, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 340, STATUS_BAR_HEIGHT,
                                             "Auto-indent: ON (click to turn off)",
                                             "Auto-indent: OFF (click to turn on)", 1);
 
@@ -1084,7 +1147,7 @@ int main(int argc, char **argv) {
      * this bar's own established "hidden/minimal unless you ask"
      * taste (hover-reveal itself, auto-indent defaulting ON because
      * it's a behavior change vs. this being a supplementary VIEW). */
-    Toggle file_tree_toggle = new_toggle(350, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+    file_tree_toggle = new_toggle(350, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
                                           "Files: ON (click to hide)",
                                           "Files: OFF (click to show)", 0);
 
@@ -1095,7 +1158,7 @@ int main(int argc, char **argv) {
      * already establish, placed right after file_tree_toggle's own
      * fixed width. Off by default, same "hidden/minimal unless you
      * ask" taste this bar already has. */
-    Toggle settings_toggle = new_toggle(575, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+    settings_toggle = new_toggle(575, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
                                          "Settings: ON (click to hide)",
                                          "Settings: OFF (click to show)", 0);
     /* Settings panel geometry -- real fixed screen coords, same "UI
@@ -1119,7 +1182,7 @@ int main(int argc, char **argv) {
      * bottom-bar Toggle, placed right after settings_toggle's own
      * fixed width -- same "hidden/minimal unless you ask" taste,
      * off by default. */
-    Toggle terminal_toggle = new_toggle(800, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+    terminal_toggle = new_toggle(800, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
                                          "Terminal: ON (click to hide)",
                                          "Terminal: OFF (click to show)", 0);
     /* editor_source_toggle -- the new RIGHT sidebar's own visibility
@@ -1127,7 +1190,7 @@ int main(int argc, char **argv) {
      * on the right for the editor's source"). Fifth real bottom-bar
      * Toggle, same shape/taste as the other four, placed right after
      * terminal_toggle's own fixed width. */
-    Toggle editor_source_toggle = new_toggle(1025, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
+    editor_source_toggle = new_toggle(1025, WINDOW_HEIGHT - STATUS_BAR_HEIGHT, 220, STATUS_BAR_HEIGHT,
                                               "Source: ON (click to hide)",
                                               "Source: OFF (click to show)", 0);
     /* Real terminal-session state -- the pty is spawned ONCE, the
@@ -1147,12 +1210,7 @@ int main(int argc, char **argv) {
      * pty-open/shell/spawn take no cwd argument (confirmed by reading
      * runtime/parena_runtime.h's own pty_open_impl: forkpty+execlp,
      * no chdir). Real cwd-sharing is separate, unstarted follow-up. */
-    int term_spawned = 0;
-    Pty term_pty;
     memset(&term_pty, 0, sizeof term_pty);
-#define TERM_OUTPUT_CAP 65536
-    char term_output[TERM_OUTPUT_CAP];
-    int term_output_len = 0;
     term_output[0] = '\0';
 
     /* file_tree_dir/file_tree_entries -- real CURRENT WORKING DIRECTORY
@@ -1175,15 +1233,13 @@ int main(int argc, char **argv) {
      * escaping arbitrarily far via mis-parsed ".." chains -- a real,
      * deliberate correctness-over-generality tradeoff, not an
      * oversight. */
-    char *file_tree_dir = ".";
-    Vec file_tree_entries = list_dir(file_tree_dir, &a);
+    file_tree_entries = list_dir(file_tree_dir, &a);
 
     /* editor_source_dir/_entries -- the new RIGHT sidebar's own fully
      * independent navigation state, same real shape as file_tree_dir/
      * _entries above (see SIDEBAR_WIDTH's own header comment further
      * up for the full real reasoning). */
-    char *editor_source_dir = ".";
-    Vec editor_source_entries = list_dir(editor_source_dir, &a);
+    editor_source_entries = list_dir(editor_source_dir, &a);
 
     /* Real Spotlight overlay state (2026-08-27, founder real-time:
      * "quick open via ctrl+t windows and linux or cmd+t for mac" ->
@@ -1199,11 +1255,7 @@ int main(int argc, char **argv) {
      * file_tree_entries' own header comment above already documents),
      * spotlight_selected is the real, currently-highlighted row
      * (Up/Down moves it, Enter activates it). */
-    int spotlight_visible = 0;
-    char spotlight_query[256] = "";
-    int spotlight_query_len = 0;
-    Vec spotlight_results = vec_new(&a);
-    int spotlight_selected = 0;
+    spotlight_results = vec_new(&a);
     /* Real, new (2026-08-27, founder real-time: "ctrl t needs to
      * scroll when you do down and it scrolls past the view"):
      * spotlight_selected used to be clamped to the real result count
@@ -1215,7 +1267,6 @@ int main(int argc, char **argv) {
      * every time spotlight_selected changes, the same real "keep the
      * selection inside the visible window" behavior every real list/
      * menu widget needs. */
-    int spotlight_scroll_offset = 0;
 #define SPOTLIGHT_MAX_VISIBLE_ROWS 12
 #define SPOTLIGHT_ROW_HEIGHT 26
 
@@ -1230,25 +1281,15 @@ int main(int argc, char **argv) {
      * (zoomMin=0.5, zoomMax=3.0, zoomStep=0.1 -- the explicit real
      * model the founder named), scaled x100 for the I32 convention
      * here. */
-    int zoom_percent = 100;
 #define ZOOM_MIN 50
 #define ZOOM_MAX 300
 #define ZOOM_STEP 10
 
-    int running = 1;
-    while (running) {
-        /* Reset the real, per-frame render arena FIRST, before this
-         * frame does any of its own drawing (frame_arena's own header
-         * comment above has the full reasoning) -- frees every
-         * allocation the PREVIOUS frame's render section made, so
-         * this frame starts from a clean, bounded slate rather than
-         * accumulating on top of every frame ever rendered. */
-        arena_free_all(&frame_arena);
-        arena_init(&frame_arena);
+    running = 1;
+    return 1;
+}
 
-        Option ev;
-        while ((ev = poll_event(&a)).tag == 1) {
-            EventKind kind = *(EventKind *)ev.value;
+void editor_widget_dispatch_event(EventKind kind) {
             if (kind.tag == EventKind_TAG_Quit) {
                 running = 0;
             } else if (kind.tag == EventKind_TAG_KeyDown) {
@@ -2012,7 +2053,9 @@ int main(int argc, char **argv) {
                     if (scroll_offset > total_lines) scroll_offset = total_lines;
                 }
             }
-        }
+}
+
+void editor_widget_render_frame(void) {
 
         /* Real per-frame, non-blocking pty drain (2026-08-27) -- runs
          * every frame regardless of terminal_toggle's own on/off state
@@ -2491,15 +2534,195 @@ int main(int argc, char **argv) {
             }
         }
 
-        render_present(&ren);
-        delay(16);
-    }
+}
 
+void editor_widget_present(void) {
+    render_present(&ren);
+}
+
+
+void editor_widget_shutdown(void) {
     ttf_quit();
     destroy_renderer(ren);
     destroy_window(win);
     quit();
     arena_free_all(&frame_arena);
     arena_free_all(&a);
+}
+
+
+/* editor_widget_make_window -- like PARENA's own create-window (sdl2.prn's
+ * own real wrapper), except it can create the window SDL_WINDOW_HIDDEN
+ * instead of always SDL_WINDOW_SHOWN. SHANKPIT's own lobby drives the
+ * widget with hidden=1 (its own real, on-screen window is lobby's,
+ * this one exists only to own an SDL_Renderer this code can draw into
+ * and read back via editor_widget_capture_rgba -- see NORTHSTAR.md's
+ * own "compositor widget" section for the real reasoning). Standalone
+ * `main()` below still passes hidden=0, so `./editor-game` keeps
+ * behaving exactly as it always has. */
+static Result editor_widget_make_window(char *title, int w, int h, int hidden, Arena *dest) {
+    /* Mirrors create_window's own real generated body above (gen/
+     * editor_stdlib_gen.c) exactly, including its own Font_box/
+     * Font_new boxing quirk for a Window result -- Font and Window are
+     * both plain `{int handle;}` structs (same layout PARENA's emitter
+     * gave every other single-int-handle SDL2 resource type), and the
+     * caller immediately reinterprets the boxed value back via
+     * `*(Window *)wr.value`, so reusing the identical boxing call here
+     * keeps this helper byte-for-byte interchangeable with the real
+     * create_window for every downstream consumer. */
+    int handle;
+    if (g_sdl2_window_count >= SDL2_MAX_WINDOWS) {
+        handle = -1;
+    } else {
+        Uint32 flags = hidden ? SDL_WINDOW_HIDDEN : SDL_WINDOW_SHOWN;
+        SDL_Window *sdlwin = SDL_CreateWindow(title, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, w, h, flags);
+        if (sdlwin == NULL) {
+            handle = -1;
+        } else {
+            handle = g_sdl2_window_count++;
+            g_sdl2_windows[handle] = sdlwin;
+        }
+    }
+    if (handle < 0) {
+        return result_err(Sdl2Error_box(dest, Sdl2Error_WindowFailed()));
+    }
+    return result_ok(Font_box(dest, Font_new(handle)));
+}
+
+/* editor_widget_capture_rgba -- reads back this widget's own hidden
+ * renderer as a plain RGBA8888 pixel buffer (WINDOW_WIDTH*WINDOW_HEIGHT*4
+ * bytes, caller-owned) so a host process (SHANKPIT's own lobby) can
+ * upload it as a real OpenGL texture and draw it as a panel inside its
+ * OWN single window -- this widget's own SDL_Renderer/window never
+ * touch the host's GL context at all, only this flat byte buffer
+ * crosses the boundary (see editor_widget.h's own header comment for
+ * why: mixing raw immediate-mode GL calls with SDL_Renderer's own GL
+ * backend state in one context is a real, live risk this sidesteps
+ * entirely). Must be called AFTER editor_widget_render_frame and
+ * BEFORE editor_widget_present for the same frame, while the
+ * just-drawn content is still the renderer's current target.
+ *
+ * Real, honest, NOT verified end to end (2026-09-25): this sandbox has
+ * no display, so the actual on-screen color correctness of
+ * SDL_PIXELFORMAT_ABGR8888 (SDL2's own conventional little-endian
+ * R,G,B,A memory layout, the standard choice for a direct
+ * glTexImage2D(..., GL_RGBA, GL_UNSIGNED_BYTE, ...) upload) could not
+ * be visually confirmed here -- verify on a real machine and swap the
+ * format below if the panel renders channel-swapped. */
+void editor_widget_capture_rgba(uint8_t *out_rgba) {
+    SDL_Renderer *sdl_ren = g_sdl2_renderers[ren.handle];
+    SDL_Rect rect;
+    rect.x = 0; rect.y = 0; rect.w = WINDOW_WIDTH; rect.h = WINDOW_HEIGHT;
+    SDL_RenderReadPixels(sdl_ren, &rect, SDL_PIXELFORMAT_ABGR8888, out_rgba, WINDOW_WIDTH * 4);
+}
+
+int editor_widget_width(void) { return WINDOW_WIDTH; }
+int editor_widget_height(void) { return WINDOW_HEIGHT; }
+
+/* editor_widget_should_close -- true once the widget's own real Quit/
+ * Escape handling (both already existed, unchanged, inside
+ * editor_widget_dispatch_event above) has fired. The host decides what
+ * "close" means for an embedded widget (e.g. just hide the panel) --
+ * this file never calls exit()/SDL_Quit() on that path, only sets the
+ * same `running` flag main()'s own loop already used to end itself. */
+int editor_widget_should_close(void) { return !running; }
+void editor_widget_reset_close_flag(void) { running = 1; }
+
+/* editor_widget_begin_frame -- the exact real per-frame arena reset
+ * main()'s own loop always did FIRST, before touching any event for
+ * that frame (frame_arena's own header comment, above, has the full
+ * original reasoning) -- unchanged behavior, just callable on its own
+ * now that a host drives the per-frame cadence instead of this file's
+ * own while(running) loop. */
+void editor_widget_begin_frame(void) {
+    arena_free_all(&frame_arena);
+    arena_init(&frame_arena);
+}
+
+/* editor_widget_inject -- takes an already-classified event `code`
+ * (the exact same 0/1/2/3/5/6/7/8/9 poll_event's own real wrapper
+ * above already returns) and the matching g_sdl2_last_event_key,
+ * g_sdl2_last_mouse_x/y, g_sdl2_last_wheel_delta side-channel globals
+ * (same ones sdl2_poll_event_impl itself always used -- see this
+ * file's own editor_widget_set_* setters below), and dispatches it
+ * through the SAME EventKind construction poll_event's own generated
+ * body performs, straight into editor_widget_dispatch_event. This is
+ * what lets a host (SHANKPIT's own lobby) feed the widget events IT
+ * captured and coordinate-translated from its own single SDL_PollEvent
+ * pump, instead of this widget's own hidden window ever polling the
+ * real global SDL event queue itself (it's hidden and unfocused, so
+ * the real OS never routes input to it directly anyway). */
+void editor_widget_set_mouse_pos(int x, int y) { g_sdl2_last_mouse_x = x; g_sdl2_last_mouse_y = y; }
+void editor_widget_set_key(int key) { g_sdl2_last_event_key = key; }
+void editor_widget_set_wheel_delta(int delta) { g_sdl2_last_wheel_delta = delta; }
+void editor_widget_set_text(const char *text) {
+    size_t n = sizeof(g_sdl2_last_event_text) - 1;
+    strncpy(g_sdl2_last_event_text, text, n);
+    g_sdl2_last_event_text[n] = '\0';
+}
+
+void editor_widget_inject(int code) {
+    EventKind kind;
+    switch (code) {
+        case 1: kind = EventKind_Quit(); break;
+        case 2: kind = EventKind_KeyDown(int_box(&a, g_sdl2_last_event_key)); break;
+        case 3: kind = EventKind_TextInput(sdl2_last_event_text_impl(&a)); break;
+        case 5: kind = EventKind_MouseDown(); break;
+        case 6: kind = EventKind_MouseUp(); break;
+        case 7: kind = EventKind_MouseMotion(); break;
+        case 9: kind = EventKind_MouseWheel(int_box(&a, g_sdl2_last_wheel_delta)); break;
+        default: kind = EventKind_UnhandledEvent(); break;
+    }
+    editor_widget_dispatch_event(kind);
+}
+
+/* editor_widget_tick_autosave -- real, new periodic auto-save
+ * (2026-09-25, founder real-time: "the notes auto save"). Separate
+ * from, and layered on top of, the existing F2/hover-Save-button
+ * manual save (do_save, above) -- those keep working exactly as
+ * before; this just also calls the SAME do_save on a timer whenever
+ * the buffer's own text has actually changed since the last tick, so
+ * an embedded widget the user never explicitly hits F2 in still
+ * doesn't lose work. `dt_seconds` is the real elapsed time since the
+ * host's own previous call (the host owns frame pacing, this file
+ * doesn't call delay() anywhere in the embedded path). */
+#define EDITOR_WIDGET_AUTOSAVE_INTERVAL_SECONDS 4.0
+static char *editor_widget_last_saved_snapshot = NULL;
+static double editor_widget_autosave_elapsed = 0.0;
+void editor_widget_tick_autosave(double dt_seconds) {
+    editor_widget_autosave_elapsed += dt_seconds;
+    if (editor_widget_autosave_elapsed < EDITOR_WIDGET_AUTOSAVE_INTERVAL_SECONDS) return;
+    editor_widget_autosave_elapsed = 0.0;
+    char *current = active_text(&buf);
+    if (editor_widget_last_saved_snapshot != NULL && strcmp(editor_widget_last_saved_snapshot, current) == 0) {
+        return;
+    }
+    do_save(&buf, path, is_markdown, &a);
+    free(editor_widget_last_saved_snapshot);
+    editor_widget_last_saved_snapshot = strdup(current);
+}
+
+/* Standalone driver -- unchanged real behavior (`./editor-game [file]`
+ * still opens a real, visible, on-screen window and runs its own
+ * blocking 60fps-ish loop exactly like before); it's now just built
+ * out of the same editor_widget_* functions a host process (SHANKPIT's
+ * own lobby) calls individually to embed this as a panel instead. */
+#ifndef EDITOR_WIDGET_TEST_BUILD
+int main(int argc, char **argv) {
+    const char *path_arg = (argc > 1) ? argv[1] : "scratch.prn";
+    if (!editor_widget_create(path_arg, argv[0], 0)) return 1;
+    while (!editor_widget_should_close()) {
+        editor_widget_begin_frame();
+        Option ev;
+        while ((ev = poll_event(&a)).tag == 1) {
+            EventKind kind = *(EventKind *)ev.value;
+            editor_widget_dispatch_event(kind);
+        }
+        editor_widget_render_frame();
+        editor_widget_present();
+        delay(16);
+    }
+    editor_widget_shutdown();
     return 0;
 }
+#endif
