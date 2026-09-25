@@ -1,0 +1,17 @@
+"""EDITOR.GAME -- the real PARENA editor, forked out as its own standalone app.
+
+Added 2026-09-25 so SHANKPIT's own apps/lobby can depend on this repo as a real bzlmod local
+module (MODULE.bazel's own local_path_override, in SHANKPIT/MODULE.bazel) instead of the fork()+
+execl()'d separate binary every other lobby app entry still uses -- see SHANKPIT's own
+apps/lobby/src/editor_widget_bridge.c for the real in-process widget this exposes as a cc_library
+(BUILD.bazel's own :editor_widget target). This repo's own standalone `./editor-game` binary
+still builds via the plain Makefile (see that file's own header comment) -- this Bazel module
+exists ADDITIONALLY, purely for the cross-repo widget dependency, not as a replacement.
+"""
+
+module(
+    name = "editor_game",
+    version = "0.0.0",
+)
+
+bazel_dep(name = "rules_cc", version = "0.2.17")
