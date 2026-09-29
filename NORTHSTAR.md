@@ -55,6 +55,48 @@ recipe here, built `editor-game` standalone, zero errors, zero warnings (`-Wall 
   drift from its source until someone regenerates it" tradeoff every other checked-in-generated-
   code precedent in this monorepo already carries.
 
+## Fork divergence found and merged (2026-09-29, EDGE.GAME S584 cont.)
+
+The widget-lifecycle refactor above (2026-09-25) and PARENA's own separate 2026-09-10 AVR
+current-file/board-profile fix to `compile_and_upload_avr` were built in the two different repos
+independently and never reconciled — found live while scoping EDGE.GAME's Phase 2 (the embedded
+IDE feedback loop needs both: the widget API to host it, the AVR fix to make its Upload button
+actually respect whatever file is open). Checked directly, not assumed: grepped both repos'
+`examples/editor_main.c` for the real `editor_widget_create`/`_dispatch_event`/`_render_frame`
+function DEFINITIONS — present only in this repo's copy, absent from PARENA's own; PARENA's copy
+had `compile_and_upload_avr(Arena *a, const char *current_file)` with board-profile selection via
+`EDGE_AVR_UPLOAD_TARGET`, this repo's copy still had the old hardcoded
+`compile_and_upload_avr(void)` always targeting `examples/avr/blink.prn` regardless of what the
+editor had open. Neither fork had both fixes.
+
+**Merged, not reconciled by picking one side:** ported PARENA's `shell_quote_single` helper and
+the full current-file/board-profile-aware `compile_and_upload_avr` onto this repo's own
+widget-refactored file scope (`current_file` is EDITOR.GAME's file-scope `path` static, `a` is
+its file-scope `Arena a`). One real, deliberate adaptation beyond a straight port: this repo
+carries no `examples/avr/` tree, no `tools/avr_touch_reset.py`, and no AVR toolchain of its own
+(per this repo's own CLAUDE.md — "this repo has no editor logic of its own"), so the merged
+function resolves `current_file` to an absolute path and delegates the actual build+flash via
+`make -C ../PARENA <target> AVR_PRN_SOURCE=<abs path>` — the exact same sibling-`../PARENA`-
+checkout dependency this repo's own `make regenerate` target already has, not a new kind of
+coupling.
+
+**Live-verified, not just code-reviewed:** built a standalone `EDITOR_WIDGET_TEST_BUILD` binary
+(same pattern `examples/editor_widget_test.c` already established) that opens a `.prn` file
+living OUTSIDE any PARENA-tree path (`/tmp/.../editor_widget_avr_test.prn`), injects a real
+MouseMotion (reveal the top bar) then MouseDown/MouseUp on the Upload button's real screen
+coordinates, and ran it headless under Xvfb. Confirmed via stderr: the upload command carried the
+scratch file's own absolute path (not `examples/avr/blink.prn`), `make -C ../PARENA
+avr-blink-upload` really ran, `parena build` → `avr-gcc` → `avr-objcopy` all succeeded against a
+real `.hex`, and the only failure was avrdude's own port-open step — the same expected
+"no physical hardware in this sandbox" outcome every other AVR target in this monorepo already
+has, not a new bug. Both real capabilities (embeddable widget + current-file-aware Upload) now
+coexist in one binary for the first time. `make` (the real standalone `./editor-game` build) is
+still `-Wall -Wextra -pedantic -Werror` clean.
+
+This closes the real, named Phase 2 prerequisite from `EDGE.GAME/NORTHSTAR.md`'s own "Real,
+found-live correction (2026-09-29)" paragraph — EDGE.GAME can now embed this fork's widget API
+without losing the AVR fix.
+
 ## Related docs
 
 | Doc | Location |

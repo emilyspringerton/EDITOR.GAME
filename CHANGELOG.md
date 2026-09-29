@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-09-29
+
+- fix(avr): merged this repo's 2026-09-25 `editor_widget_*` refactor with PARENA's own separate
+  2026-09-10 current-file/board-profile-aware `compile_and_upload_avr` fix — the two forks had
+  diverged (this repo had the widget API but the old hardcoded-to-`blink.prn` Upload button;
+  PARENA's own copy had the AVR fix but not the widget API), found while scoping EDGE.GAME's
+  Phase 2 embedded-IDE work. Ported `shell_quote_single` + the full current-file/
+  `EDGE_AVR_UPLOAD_TARGET`-aware `compile_and_upload_avr(Arena *a, const char *current_file)`
+  onto this repo's file-scope `a`/`path` widget state; since this repo carries no `examples/avr/`
+  tree or AVR toolchain of its own, the merged function resolves `current_file` to an absolute
+  path and delegates via `make -C ../PARENA <target> AVR_PRN_SOURCE=<abs path>` (same sibling-
+  checkout dependency `make regenerate` already has). Live-verified headless (Xvfb,
+  `EDITOR_WIDGET_TEST_BUILD`): opened a `.prn` file outside any PARENA-tree path, injected a real
+  Upload-button click, confirmed the command carried the scratch file's own path and ran the real
+  `parena build` → `avr-gcc` → `avr-objcopy` → `avrdude` chain, failing only at avrdude's
+  port-open step (expected, no physical board in this sandbox). `make` still
+  `-Wall -Wextra -pedantic -Werror` clean. See `NORTHSTAR.md`'s new "Fork divergence found and
+  merged" section.
+
 ## 2026-09-25
 
 - feat(widget): split `examples/editor_main.c`'s single blocking `main()` into a real,
