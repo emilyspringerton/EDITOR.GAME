@@ -793,7 +793,12 @@ static void compile_and_upload_avr(Arena *a, const char *current_file) {
 
     char abs_buf[4096];
     const char *abs_file = current_file;
+#ifdef _WIN32
+    /* mingw has no realpath(); _fullpath is the Windows equivalent. */
+    if (_fullpath(abs_buf, current_file, sizeof abs_buf) != NULL) {
+#else
     if (current_file[0] != '/' && realpath(current_file, abs_buf) != NULL) {
+#endif
         abs_file = abs_buf;
     }
 
