@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-10-02
+- live reload on external file edits (EDGE.GAME editor_set), conflict-safe via <file>.external (#475) (sess-20260923-1030-4a526255)
 - autosave no longer reformats the buffer (stray newlines every few seconds) (#476) (sess-20260923-1030-4a526255)
 
 - editor opens PARENA's AVR blink program by default when the target file is missing (#473) (sess-20260923-1030-4a526255)
