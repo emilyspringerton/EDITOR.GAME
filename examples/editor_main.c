@@ -1050,6 +1050,42 @@ static int running = 1;
 
 static Result editor_widget_make_window(char *title, int w, int h, int hidden, Arena *dest);
 
+/* Seed program (card #473, founder: "when the editor opens it should load the blink code"):
+ * a path that doesn't exist yet opens as PARENA's real AVR blink program (a verbatim copy of
+ * PARENA/examples/avr/blink.prn) instead of an empty buffer, so Upload works the moment the
+ * editor opens. Written to disk first so Save/Upload (which work from the current file) behave
+ * exactly as for a real file. An existing file is never touched. */
+static const char *const BLINK_SEED =
+    ";; examples/avr/blink.prn — PARENA's real first AVR-targeted program\n"
+    ";; (founder real-time, 2026-09-10: \"lets update parena so that it can\n"
+    ";; run on an arduino... start with making the onboard led blink\").\n"
+    ";;\n"
+    ";; Deliberately pure, scalar decision logic -- no I/O, no Region/Arena\n"
+    ";; machinery -- same real \"PARENA emits the decision, a thin hand-written\n"
+    ";; native host wires it to the real platform\" shape SPIDERBEETLE's own\n"
+    ";; stdlib/android/battery_ui.prn already established for a different\n"
+    ";; native target (Java/Android). AVR needs its own real host\n"
+    ";; (examples/avr/blink_main.c) because this repo's shared runtime/\n"
+    ";; parena_runtime.h is Linux-syscall-heavy (sockets, pty, mmap, SPI/I2C\n"
+    ";; device files) and cannot compile under avr-gcc's freestanding\n"
+    ";; environment -- confirmed directly, not assumed. next-led-state carries\n"
+    ";; zero platform assumptions: an ordinary Bool -> Bool toggle, testable\n"
+    ";; on the host build the exact same way any other PARENA function is.\n"
+    "(module avr/blink)\n"
+    "(export next-led-state)\n"
+    "\n"
+    "(defn next-led-state [(current : Bool)] : Bool\n"
+    "  (not current))\n";
+
+static void seed_blink_if_missing(const char *p) {
+    FILE *f = fopen(p, "rb");
+    if (f) { fclose(f); return; }
+    f = fopen(p, "wb");
+    if (!f) return;
+    fputs(BLINK_SEED, f);
+    fclose(f);
+}
+
 int editor_widget_create(const char *path_arg, const char *argv0, int hidden) {
     path = path_arg;
 
@@ -1153,6 +1189,7 @@ int editor_widget_create(const char *path_arg, const char *argv0, int hidden) {
     rules = *(Vec *)gr.value;
 
     start_text_input();
+    seed_blink_if_missing(path);
     buf = load_from_file(path, &a);
 
     /* Real, resolved once at startup (2026-08-27, real drag-and-drop):
@@ -2783,7 +2820,7 @@ void editor_widget_tick_autosave(double dt_seconds) {
  * own lobby) calls individually to embed this as a panel instead. */
 #ifndef EDITOR_WIDGET_TEST_BUILD
 int main(int argc, char **argv) {
-    const char *path_arg = (argc > 1) ? argv[1] : "scratch.prn";
+    const char *path_arg = (argc > 1) ? argv[1] : "blink.prn";
     if (!editor_widget_create(path_arg, argv[0], 0)) return 1;
     while (!editor_widget_should_close()) {
         editor_widget_begin_frame();
