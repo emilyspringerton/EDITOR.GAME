@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-02
+
+- editor opens PARENA's AVR blink program by default when the target file is missing (#473) (sess-20260923-1030-4a526255)
+
+
 ## 2026-09-29
 
 - fix(avr): merged this repo's 2026-09-25 `editor_widget_*` refactor with PARENA's own separate
