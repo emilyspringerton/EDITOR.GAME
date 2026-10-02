@@ -1086,6 +1086,7 @@ static void seed_blink_if_missing(const char *p) {
     fclose(f);
 }
 
+static void ext_mark_clean(void);
 int editor_widget_create(const char *path_arg, const char *argv0, int hidden) {
     path = path_arg;
 
@@ -1191,6 +1192,7 @@ int editor_widget_create(const char *path_arg, const char *argv0, int hidden) {
     start_text_input();
     seed_blink_if_missing(path);
     buf = load_from_file(path, &a);
+    ext_mark_clean();
 
     /* Real, resolved once at startup (2026-08-27, real drag-and-drop):
      * spawn_new_instance's own real re-exec target. Resolved here, not
@@ -2797,10 +2799,79 @@ void editor_widget_inject(int code) {
  * doesn't lose work. `dt_seconds` is the real elapsed time since the
  * host's own previous call (the host owns frame pacing, this file
  * doesn't call delay() anywhere in the embedded path). */
+/* External-edit sync (card #475, founder: "EDGE.GAME server gives claude api bindings to control the
+ * editor"): the EDGE.GAME cabinet client writes the editor's file when the server sends editor_set;
+ * the editor notices (mtime+size poll, ~1s) and reloads it live, so the block in the game window changes
+ * under the user's eyes. Safety rules: the reload happens ONLY if the buffer is still exactly what was
+ * last loaded/saved (the user hasn't typed since) -- otherwise the user's text wins, and the external
+ * version is kept at "<file>.external" so nothing is lost either way. Our own saves are recognised
+ * (file text == buffer text) and don't cause a reload. */
+static long ext_known_mtime = 0, ext_known_size = -1;
+static char *ext_clean_text = NULL;
+static double ext_poll_elapsed = 0.0;
+static int ext_conflict_reported = 0;
+
+static int ext_file_key(long *mtime, long *size) {
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    *mtime = (long)st.st_mtime; *size = (long)st.st_size;
+    return 1;
+}
+
+static char *ext_read_file(void) {
+    FILE *f = fopen(path, "rb");
+    char *t = NULL;
+    long n;
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END); n = ftell(f); fseek(f, 0, SEEK_SET);
+    if (n >= 0 && (t = (char *)malloc((size_t)n + 1)) != NULL) {
+        size_t got = fread(t, 1, (size_t)n, f);
+        t[got] = '\0';
+    }
+    fclose(f);
+    return t;
+}
+
+static void ext_mark_clean(void) {
+    free(ext_clean_text);
+    ext_clean_text = strdup(active_text(&buf));
+    ext_file_key(&ext_known_mtime, &ext_known_size);
+    ext_conflict_reported = 0;
+}
+
+void editor_widget_tick_external(double dt_seconds) {
+    long mt, sz;
+    char *disk, *cur;
+    ext_poll_elapsed += dt_seconds;
+    if (ext_poll_elapsed < 1.0) return;
+    ext_poll_elapsed = 0.0;
+    if (!ext_file_key(&mt, &sz)) return;
+    if (mt == ext_known_mtime && sz == ext_known_size) return;
+    disk = ext_read_file();
+    if (!disk) return;
+    cur = active_text(&buf);
+    if (strcmp(disk, cur) == 0) { ext_mark_clean(); free(disk); return; }          /* our own save */
+    if (ext_clean_text && strcmp(cur, ext_clean_text) == 0) {                      /* user hasn't typed */
+        buf = from_text(arena_strdup(&a, disk, strlen(disk)));
+        fprintf(stderr, "editor: %s changed on disk (external edit) -- reloaded\n", path);
+        ext_mark_clean();
+    } else if (!ext_conflict_reported) {                                           /* user's text wins */
+        char side[600];
+        FILE *f;
+        snprintf(side, sizeof(side), "%s.external", path);
+        f = fopen(side, "wb");
+        if (f) { fputs(disk, f); fclose(f); }
+        fprintf(stderr, "editor: %s changed on disk while you have unsaved edits -- kept yours, external version saved to %s\n", path, side);
+        ext_conflict_reported = 1;
+    }
+    free(disk);
+}
+
 #define EDITOR_WIDGET_AUTOSAVE_INTERVAL_SECONDS 4.0
 static char *editor_widget_last_saved_snapshot = NULL;
 static double editor_widget_autosave_elapsed = 0.0;
 void editor_widget_tick_autosave(double dt_seconds) {
+    editor_widget_tick_external(dt_seconds);
     editor_widget_autosave_elapsed += dt_seconds;
     if (editor_widget_autosave_elapsed < EDITOR_WIDGET_AUTOSAVE_INTERVAL_SECONDS) return;
     editor_widget_autosave_elapsed = 0.0;
@@ -2834,6 +2905,7 @@ int main(int argc, char **argv) {
             EventKind kind = *(EventKind *)ev.value;
             editor_widget_dispatch_event(kind);
         }
+        editor_widget_tick_external(0.016);
         editor_widget_render_frame();
         editor_widget_present();
         delay(16);
