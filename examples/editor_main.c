@@ -2808,7 +2808,12 @@ void editor_widget_tick_autosave(double dt_seconds) {
     if (editor_widget_last_saved_snapshot != NULL && strcmp(editor_widget_last_saved_snapshot, current) == 0) {
         return;
     }
-    do_save(&buf, path, is_markdown, &a);
+    /* Raw save, NOT do_save (card #476, founder: "weird carriage return every so often
+     * automatically"): do_save runs prnfmt and replaces the live buffer with the formatted
+     * text, which is right for an explicit F2/Save but, on a 4s timer, reflowed the user's
+     * text (moving lines/inserting newlines) while they were typing. Autosave only writes
+     * what's in the buffer; formatting stays an explicit-save action. */
+    save_to_file(path, current, &a);
     free(editor_widget_last_saved_snapshot);
     editor_widget_last_saved_snapshot = strdup(current);
 }
