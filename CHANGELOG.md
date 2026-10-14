@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-10-14
+- binary files open as a read-only hex view (PARENA hexview.prn; do_save refuses while active); regenerated gen/editor_stdlib_gen.c. SDL window untested here (no SDL2); syntax-checked only. (sess-20261013-2122-ded60695)
+
 ## 2026-10-02
 - live reload on external file edits (EDGE.GAME editor_set), conflict-safe via <file>.external (#475) (sess-20260923-1030-4a526255)
 - autosave no longer reformats the buffer (stray newlines every few seconds) (#476) (sess-20260923-1030-4a526255)

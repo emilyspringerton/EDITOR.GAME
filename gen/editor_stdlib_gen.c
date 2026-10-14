@@ -881,6 +881,19 @@ Vec construct_split_provider(char *, char *, Arena *);
 void construct_split_maybe_push(Vec *, int, char *, Arena *);
 void append_all(Vec *, Vec *, int, Arena *);
 Vec run_providers(char *, char *, char *, Arena *);
+int raw_byte_at(char *, int);
+int hex_digit_code(int);
+char * hex_byte(char *, int, Arena *);
+char * hex_offset(int, Arena *);
+int hex_pow16(int);
+int printable_code(int);
+char * hex_row(char *, int, int, int, Arena *);
+char * hex_dump(char *, int, int, Arena *);
+int row_of(int, int);
+int col_of(int, int);
+int rows_for(int, int);
+int cell_x(int);
+int ascii_x(int, int);
 
 static inline int *int_box(Arena *dest, int v) {
     int *p = (int *)arena_alloc(dest, sizeof(int));
@@ -4680,5 +4693,145 @@ Vec run_providers(char * query __attribute__((unused)), char * root __attribute_
     (void)(append_all(&(results), &(construct_results), 0, dest));
     (void)(append_all(&(results), &(file_results), 0, dest));
     return results;
+}
+
+int raw_byte_at(char * data __attribute__((unused)), int i __attribute__((unused))) {
+    return (char_at(data, i) & 255);
+}
+
+int hex_digit_code(int n __attribute__((unused))) {
+    if ((n < 10)) {
+    return (48 + n);
+    } else {
+    return (87 + n);
+    }
+}
+
+char * hex_byte(char * data __attribute__((unused)), int i __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    int b __attribute__((unused)) = raw_byte_at(data, i);
+    char *hi __attribute__((unused)) = char_from_code(hex_digit_code((b / 16)), dest);
+    char *lo __attribute__((unused)) = char_from_code(hex_digit_code((b % 16)), dest);
+    return concat(hi, lo, dest);
+}
+
+char * hex_offset(int off __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __loop_result_33 __attribute__((unused));
+    int shift = 7;
+    char * acc = "";
+    while (1) {
+        if ((shift < 0)) {
+        __loop_result_33 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (shift - 1);
+        char * __recur_tmp_1 = concat(acc, char_from_code(hex_digit_code(((off / hex_pow16(shift)) % 16)), dest), dest);
+        shift = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_33;
+}
+
+int hex_pow16(int n __attribute__((unused))) {
+    int __loop_result_34 __attribute__((unused));
+    int i = 0;
+    int acc = 1;
+    while (1) {
+        if ((i >= n)) {
+        __loop_result_34 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        int __recur_tmp_1 = (acc * 16);
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_34;
+}
+
+int printable_code(int b __attribute__((unused))) {
+    if (((b >= 32) && (b < 127))) {
+    return b;
+    } else {
+    return 46;
+    }
+}
+
+char * hex_row(char * data __attribute__((unused)), int len __attribute__((unused)), int start __attribute__((unused)), int width __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __let_val_0 __attribute__((unused));
+    int i = 0;
+    char * acc = "";
+    while (1) {
+        if ((i >= width)) {
+        __let_val_0 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (i + 1);
+        char * __recur_tmp_1 = (((start + i) < len) ? concat(concat(acc, hex_byte(data, (start + i), dest), dest), " ", dest) : concat(acc, "   ", dest));
+        i = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    char *hexpart __attribute__((unused)) = __let_val_0;
+    char * __let_val_1 __attribute__((unused));
+    int j = 0;
+    char * aacc = "";
+    while (1) {
+        if (((j >= width) || ((start + j) >= len))) {
+        __let_val_1 = aacc;
+        break;
+        } else {
+        int __recur_tmp_0 = (j + 1);
+        char * __recur_tmp_1 = concat(aacc, char_from_code(printable_code(raw_byte_at(data, (start + j))), dest), dest);
+        j = __recur_tmp_0;
+        aacc = __recur_tmp_1;
+        continue;
+        }
+    }
+    char *asc __attribute__((unused)) = __let_val_1;
+    return concat(concat(concat(hex_offset(start, dest), "  ", dest), hexpart, dest), concat(concat(" |", asc, dest), "|", dest), dest);
+}
+
+char * hex_dump(char * data __attribute__((unused)), int len __attribute__((unused)), int width __attribute__((unused)), Arena *dest __attribute__((unused))) {
+    char * __loop_result_35 __attribute__((unused));
+    int start = 0;
+    char * acc = "";
+    while (1) {
+        if ((start >= len)) {
+        __loop_result_35 = acc;
+        break;
+        } else {
+        int __recur_tmp_0 = (start + width);
+        char * __recur_tmp_1 = concat(((start == 0) ? acc : concat(acc, "\n", dest)), hex_row(data, len, start, width, dest), dest);
+        start = __recur_tmp_0;
+        acc = __recur_tmp_1;
+        continue;
+        }
+    }
+    return __loop_result_35;
+}
+
+int row_of(int off __attribute__((unused)), int width __attribute__((unused))) {
+    return (off / width);
+}
+
+int col_of(int off __attribute__((unused)), int width __attribute__((unused))) {
+    return (off % width);
+}
+
+int rows_for(int len __attribute__((unused)), int width __attribute__((unused))) {
+    return ((len + (width - 1)) / width);
+}
+
+int cell_x(int col __attribute__((unused))) {
+    return (10 + (col * 3));
+}
+
+int ascii_x(int col __attribute__((unused)), int width __attribute__((unused))) {
+    return ((10 + (width * 3)) + (2 + col));
 }
 
